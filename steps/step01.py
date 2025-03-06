@@ -14,5 +14,5 @@ print(x.data)
 x.data = np.array(2.0)
 print(x.data)
 
-y = Variable(-1)
+y = Variable(np.array(-1.0))
 print(y.data)
