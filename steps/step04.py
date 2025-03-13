@@ -43,19 +43,10 @@ def numerical_diff(f, x, eps=1e-4):
 def diff(x):
     return 2*(1+np.exp(x))*np.exp(x)
 
-print(diff(1))
-
 if __name__ == '__main__':
-    A = Square()
-    B = Exp()
-    C = Square()
+    f = AddOne()
+    x = Variable(np.array(1.0))
+    print(f(x).data)
+    
 
-    x = Variable(np.array(0.5))
-    a = A(x)
-    b = B(a)
-    y = C(b)
-    print(y.data)
 
-    y.grad = np.array(1.0)
-    y.backward()
-    print(x.grad)
