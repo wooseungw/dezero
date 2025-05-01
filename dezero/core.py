@@ -27,17 +27,10 @@ def no_grad():
     return using_config('enable_backprop', False)
 
 
-def test_mode():
-    return using_config('train', False)
-
 # =============================================================================
 # Variable / Function
 # =============================================================================
-try:
-    import cupy
-    array_types = (np.ndarray, cupy.ndarray)
-except ImportError:
-    array_types = (np.ndarray)
+array_types = (np.ndarray)
 
 
 class Variable:
@@ -83,9 +76,6 @@ class Variable:
         self.creator = func
         self.generation = func.generation + 1
 
-    def unchain(self):
-        self.creator = None
-
     def cleargrad(self):
         self.grad = None
 
@@ -125,18 +115,6 @@ class Variable:
                 for y in f.outputs:
                     y().grad = None  # y is weakref
 
-    
-
-    @property
-    def T(self):
-        return dezero.functions.transpose(self)
-
-    def sum(self, axis=None, keepdims=False):
-        return dezero.functions.sum(self, axis, keepdims)
-
-
-class Parameter(Variable):
-    pass
 
 
 def as_variable(obj):
@@ -176,6 +154,30 @@ class Function:
     def backward(self, gys):
         raise NotImplementedError()
 
+class Function:
+    def __call__(self, *inputs):
+        inputs = [as_variable(x) for x in inputs]
+
+        xs = [x.data for x in inputs]
+        ys = self.forward(*xs)
+        if not isinstance(ys, tuple):
+            ys = (ys,)
+        outputs = [Variable(as_array(y)) for y in ys]
+
+        if Config.enable_backprop:
+            self.generation = max([x.generation for x in inputs])
+            for output in outputs:
+                output.set_creator(self)
+            self.inputs = inputs
+            self.outputs = [weakref.ref(output) for output in outputs]
+
+        return outputs if len(outputs) > 1 else outputs[0]
+
+    def forward(self, xs):
+        raise NotImplementedError()
+
+    def backward(self, gys):
+        raise NotImplementedError()
 
 # =============================================================================
 # 사칙연산 / 연산자 오버로드
@@ -183,11 +185,16 @@ class Function:
 # 사칙연산 / 연산자 오버로드
 class Add(Function):
     def forward(self, x0, x1):
+        self.x0_shape, self.x1_shape = x0.shape, x1.shape
         y = x0 + x1
         return y
 
     def backward(self, gy):
-        return gy, gy
+        gx0, gx1 = gy, gy
+        if self.x0_shape != self.x1_shape:  # for broadcaset
+            gx0 = dezero.functions.sum_to(gx0, self.x0_shape)
+            gx1 = dezero.functions.sum_to(gx1, self.x1_shape)
+        return gx0, gx1
 
 
 def add(x0, x1):
@@ -202,7 +209,12 @@ class Mul(Function):
 
     def backward(self, gy):
         x0, x1 = self.inputs
-        return gy * x1, gy * x0
+        gx0 = gy * x1
+        gx1 = gy * x0
+        if x0.shape != x1.shape:  # for broadcast
+            gx0 = dezero.functions.sum_to(gx0, x0.shape)
+            gx1 = dezero.functions.sum_to(gx1, x1.shape)
+        return gx0, gx1
 
 
 def mul(x0, x1):
@@ -224,11 +236,17 @@ def neg(x):
 
 class Sub(Function):
     def forward(self, x0, x1):
+        self.x0_shape, self.x1_shape = x0.shape, x1.shape
         y = x0 - x1
         return y
 
     def backward(self, gy):
-        return gy, -gy
+        gx0 = gy
+        gx1 = -gy
+        if self.x0_shape != self.x1_shape:  # for broadcast
+            gx0 = dezero.functions.sum_to(gx0, self.x0_shape)
+            gx1 = dezero.functions.sum_to(gx1, self.x1_shape)
+        return gx0, gx1
 
 
 def sub(x0, x1):
@@ -247,9 +265,12 @@ class Div(Function):
         return y
 
     def backward(self, gy):
-        x0, x1 = self.inputs[0].data, self.inputs[1].data
+        x0, x1 = self.inputs
         gx0 = gy / x1
         gx1 = gy * (-x0 / x1 ** 2)
+        if x0.shape != x1.shape:  # for broadcast
+            gx0 = dezero.functions.sum_to(gx0, x0.shape)
+            gx1 = dezero.functions.sum_to(gx1, x1.shape)
         return gx0, gx1
 
 
@@ -272,9 +293,8 @@ class Pow(Function):
         return y
 
     def backward(self, gy):
-        x = self.inputs[0].data
+        x, = self.inputs
         c = self.c
-
         gx = c * x ** (c - 1) * gy
         return gx
 
